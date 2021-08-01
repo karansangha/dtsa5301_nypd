@@ -1,0 +1,161 @@
+---
+title: "Analysis of the NYPD Shooting Incident Data"
+date: "2021-07-31"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+This dataset lists every shooting incident in NYC between 2006 and the end of
+last calendar year. As of the publishing date of this report, the data spans till
+Dec 31, 2020. The dataset contains relevant information about the location, victims and the perpetrators as well. 
+
+Load all the necessary libraries.
+```{r load_library, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+theme_set(theme_minimal())
+```
+
+Download and load the NYC data.
+
+```{r load_data}
+df_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+df <- read_csv(df_url, show_col_types = FALSE)
+
+# Dimensions of the downloaded dataset
+dim(df)
+```
+
+## Data Cleaning
+
+```{r clean_data}
+# Convert date from chr to Date format
+df$OCCUR_DATE <- mdy(df$OCCUR_DATE) 
+
+# Convert certain columns with categorical data from "chr" to factors
+cols_to_factor <- c("BORO", "LOCATION_DESC", "PERP_SEX", "PERP_RACE", "VIC_SEX", "VIC_RACE")
+df <- df %>% mutate_at(cols_to_factor, factor)
+
+```
+
+```{r drop_columns}
+# Drop the columns that aren't necessary for the analysis
+cols_to_drop <- c("X_COORD_CD", "Y_COORD_CD", "Latitude", "Longitude", "Lon_Lat")
+
+clean_df <- df %>% select(-all_of(cols_to_drop))
+
+# Let's check the number of missing values in each column
+colSums(is.na(clean_df))
+```
+From the R output above we can see that columns related to perpetrator (PERP) are the ones that have the most amount of missing data. Perpetrators are the people who carry out a harmful/illegal act, in this case, they instigated the shooting incident based on the reports given by the victim/bystanders/crime reporters. I will not be dropping these columns
+
+Additionally, the description of the place where the shooting incident took place is also missing from more than half of the dataset. We can exclude this column from our analysis.
+
+For the 2 cases where the jurisdiction codes are misssing, we can safely drop those 2 rows since they represent a very (very) tiny portion of our dataset. 
+
+```{r drop_na}
+# Drop the location description column since its missing data for > 50% rows
+clean_df <- clean_df %>% select(-LOCATION_DESC)
+
+# Drop the 2 rows with missing jurisdiction codes
+clean_df <- clean_df[!is.na(clean_df$JURISDICTION_CODE),]
+```
+
+## Data Analysis
+
+```{r viz_1}
+ggplot(data = clean_df, aes(x = year(OCCUR_DATE))) + geom_line(stat='count') + 
+  expand_limits(y = 0) +  
+  xlab("Year") + ylab("# of shooting incidents") + 
+  ggtitle("# of shooting incidents in NYC per year") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+There was a steady decline in shooting incidents between 2011 and 2019 but the trend took a huge reversal in 2020. It reached some of the highest levels observed in the last 14 years. There could be a few reasons behind this:
+
+1. Many businesses closed down amidst the pandemic. This might have lead to an increase in frustration among the general public. Higher frustration levels *might* have led to an increase in shooting incidents.
+
+2. \# of gun sales might have increased as well. 
+
+```{r viz_2, fig.width=12}
+ggplot(data = clean_df, aes(x = fct_infreq(VIC_RACE))) + geom_bar() + 
+  coord_flip() + 
+  xlab("Victim's Race") + ylab("# of victims") + 
+  ggtitle("# of shooting victims per race in NYC") + 
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  geom_text(aes(label = ..count..), stat = "count", size = 4,
+            fontface="bold", color="darkgreen", hjust=-0.01)
+```
+
+Black people are way more at risk of being victim to a shooting incident than all the other races combined.
+
+
+```{r viz_3}
+ggplot(data = clean_df, aes(x = fct_rev(fct_infreq(BORO)))) + geom_bar() +
+  xlab("NYC Boroughs") + ylab("# of shooting incidents") +
+  ggtitle("# of shooting victims per borough in NYC") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+Most of the shooting incidents took place in Brooklyn. But where did most of the murders take place? 
+
+```{r viz_4}
+clean_df[clean_df$STATISTICAL_MURDER_FLAG==TRUE, ] %>% 
+  ggplot(aes(x = fct_rev(fct_infreq(BORO)))) + geom_bar() + 
+  xlab("NYC Boroughs") + ylab("# of murders") +
+  ggtitle("# of murders per borough in NYC") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+The distribution of murders is exactly similar to the previous visualization. 
+
+## Data Modeling 
+```{r model_df}
+model_df <- clean_df %>% 
+  group_by(year = year(OCCUR_DATE)) %>%
+  summarise(total_incidents=n(), total_deaths=sum(STATISTICAL_MURDER_FLAG),
+            .groups = 'drop')
+head(model_df)
+```
+We've created a summary table of total incidents and total deaths in each year over the last 14 years. Lets create a simple linear model to see the correlation between # of incidents and # of deaths. 
+
+```{r model}
+mod <- lm(total_deaths ~ total_incidents, data=model_df)
+summary(mod)
+```
+The R^2^ value is really high at 92% and the p-value is really small as well. This helps us conclude that the model can accurately predict the # of deaths based on the # of shooting incidents. 
+
+```{r preds}
+ggplot(data = model_df, aes(x = total_incidents, y = total_deaths)) +
+  geom_point() + 
+  stat_smooth(formula = y ~ x, method = "lm", col = "dodgerblue3", se=FALSE) +
+  theme(panel.background = element_rect(fill = "white"),
+        axis.line.x=element_line(), axis.line.y=element_line()) +
+  xlab("# of incidents") + ylab("# of deaths") + 
+  ggtitle("Comparing predictions vs actuals for # of deaths based on the linear model")
+```
+The blue line is made up of "predicted" deaths and is fairly linear since the model is *also* linear. The predictions are a little poor on both extremities (min and max). This could perhaps be further improved by looking at multiple linear regression: predicting # of deaths based on more than 1 variable 
+
+## Conclusion
+
+We've identified certain trends based on the data from the shooting incidents in NYC over the last 14 years:
+
+- The borough with the highest numbers of shooting incidents *and* murders is Brooklyn. Further analysis could be performed here by correlating this information with population of the boroughs. 
+
+- Black people are much more likely to be victims of shooting incidents than all the other races in the dataset combined. 
+
+- \# of deaths and # of shooting incidents are highly correlated to each other. 
+
+**Sources of bias**
+
+- Poorer neighborhoods might have lower rate of reported incidents if the basic technological infrastrutuce isn't setup there. Poor cellphone signals, unscheduled power cuts, etc. 
+- If people don't trust the police system, they are much less likely to report these incidents.
+
+**Personal bias**
+
+- As someone who dreams about living and working in Manhattan in the next few years, I was a little intrigued to dig deeper into Manhattan data exclusively and gather all the insights that I could.
+- In order to mitigate this bias, I took a fair approach of analyzing **all** the boroughs at the same time to stay focused on the bigger picture.
+
